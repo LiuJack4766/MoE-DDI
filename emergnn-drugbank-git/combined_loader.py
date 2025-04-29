@@ -145,6 +145,17 @@ class DataLoaderSubKG(DataLoader):
         self.kg_triplets = defaultdict(list)
         self.ddi_in_kg = set()
 
+        # 读取统一关系ID
+        relation_json_path = os.path.join(self.task_dir, "data/relation2id.json")
+        if os.path.exists(relation_json_path):
+            with open(relation_json_path, 'r') as f:
+                global_relation2id = json.load(f)
+                max_rel_id = max(int(k) for k in global_relation2id.keys())
+                print(f"成功从{relation_json_path}加载统一关系空间，最大关系ID: {max_rel_id}")
+        else:
+            print(f"警告: 无法找到{relation_json_path}文件，使用子图关系ID")
+            global_relation2id = None
+
         for split, file_path in paths.items():
             with open(file_path) as f:
                 lines = [ln.split() for ln in f.read().split("\n") if ln.strip()]
@@ -173,7 +184,14 @@ class DataLoaderSubKG(DataLoader):
         )
 
         self.all_ent = max(self.entity2id.keys()) + 1
-        self.all_rel = max(self.relation2id.keys()) + 1
+        
+        # 使用统一关系空间
+        if global_relation2id is not None:
+            self.all_rel = max_rel_id + 1
+            print(f"使用统一关系空间，最大关系ID: {max_rel_id}")
+        else:
+            self.all_rel = max(self.relation2id.keys()) + 1
+            print(f"使用本地关系空间，最大关系ID: {self.all_rel-1}")
 
         # 打印 KG & DDI 统计
         print(
@@ -272,6 +290,17 @@ class MoEDataLoader(DataLoader):
 
     # ------------------------------------------------------------------
     def load_multi_kg(self):
+        # 读取统一关系ID
+        relation_json_path = os.path.join(self.task_dir, "data/relation2id.json")
+        if os.path.exists(relation_json_path):
+            with open(relation_json_path, 'r') as f:
+                global_relation2id = json.load(f)
+                max_rel_id = max(int(k) for k in global_relation2id.keys())
+                print(f"成功从{relation_json_path}加载统一关系空间，最大关系ID: {max_rel_id}")
+        else:
+            print(f"警告: 无法找到{relation_json_path}文件，使用合并图谱关系ID")
+            global_relation2id = None
+            
         for name in self.kg_names:
             for split in ["train", "valid", "test"]:
                 fp = os.path.join(self.task_dir, f"data/{self.dataset}/{split}_{name}_KG.txt")
@@ -291,7 +320,14 @@ class MoEDataLoader(DataLoader):
                                 self.ddi_in_kg.add(t)
 
         self.all_ent = max(self.entity2id.keys()) + 1
-        self.all_rel = max(self.relation2id.keys()) + 1
+        
+        # 使用统一关系空间
+        if global_relation2id is not None:
+            self.all_rel = max_rel_id + 1
+            print(f"使用统一关系空间，最大关系ID: {max_rel_id}")
+        else:
+            self.all_rel = max(self.relation2id.keys()) + 1
+            print(f"使用合并图谱关系空间，最大关系ID: {self.all_rel-1}")
 
         # 打印统计
         for name in self.kg_names:

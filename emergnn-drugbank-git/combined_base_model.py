@@ -87,6 +87,23 @@ class BaseModel:
                 ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 f.write(f"==== 训练开始: {ts} ====\n超参数:\n")
                 for k, v in vars(self.args).items(): f.write(f"  {k}: {v}\n")
+                
+                # 记录特征矩阵维度信息到日志文件
+                f.write("\n特征矩阵维度信息:\n")
+                if self.args.feat.upper() == "M":
+                    f.write(f"  - 输入维度: 1024 (Morgan指纹)\n")
+                    f.write(f"  - 实体嵌入维度: {self.args.n_dim}\n")
+                    f.write(f"  - 关系嵌入维度: {self.args.n_dim}\n")
+                    f.write(f"  - 注意力权重维度: {2*self.args.all_rel+1}\n")
+                    f.write(f"  - 最终预测维度: {self.model.eval_rel}\n")
+                    f.write(f"  - 连接方式: head_hid + tail_hid → {2*self.args.n_dim} → {self.model.eval_rel}\n")
+                else:
+                    f.write(f"  - 实体嵌入维度: {self.args.n_dim}\n")
+                    f.write(f"  - 关系嵌入维度: {self.args.n_dim}\n")
+                    f.write(f"  - 注意力权重维度: {2*self.args.all_rel+1}\n")
+                    f.write(f"  - 最终预测维度: {self.model.eval_rel}\n")
+                    f.write(f"  - 连接方式: head_emb + tail_emb + head_hid + tail_hid → {4*self.args.n_dim} → {self.model.eval_rel}\n")
+                
                 f.write("\n时间戳,Epoch,类型,F1,Acc,Kappa\n")
         with open(log_file, "a", encoding="utf-8") as f:
             ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -98,14 +115,61 @@ class BaseModel:
 
 # =============== 多专家 / MoE ===============
 class MoEBaseModel:
-    def __init__(self, kg_names, eval_ent, eval_rel, args, expert_ckpts=None):
+    def __init__(self, kg_names, eval_ent, eval_rel, args, expert_ckpts=None, freeze_experts=False):
         from combined_models import MoE_EmerGNN
         self.model = MoE_EmerGNN(kg_names, eval_ent, eval_rel, args)
         if torch.cuda.is_available():
             self.model.cuda()
         self.kg_names = kg_names
         self.args = args
-        self.optimizer = Adam(self.model.parameters(), lr=args.lr, weight_decay=args.lamb)
+        
+        # 加载预训练专家或完整MoE模型
+        if args.model_path and os.path.exists(args.model_path):
+            print(f">> 加载完整MoE模型：{args.model_path}")
+            
+            # 如果没有明确指定专家名称，尝试从检查点路径中推断
+            if not kg_names or len(kg_names) == 0:
+                # 解析类似 "fused_3_molecule_3_bestcheckpoint.pt" 的格式
+                base_name = os.path.basename(args.model_path).split('_bestcheckpoint')[0]
+                parts = base_name.split('_')
+                
+                # 跳过数字部分来获取专家名称
+                inferred_kg_names = []
+                i = 0
+                while i < len(parts):
+                    if not parts[i].isdigit():  # 当前部分是专家名称
+                        inferred_kg_names.append(parts[i])
+                        i += 2  # 跳过专家名称后面的数字参数
+                    else:
+                        i += 1  # 跳过单独的数字
+                
+                if inferred_kg_names:
+                    print(f">> 从检查点路径推断专家名称: {inferred_kg_names}")
+                    # 更新模型的kg_names
+                    self.kg_names = inferred_kg_names
+                    # 重新创建MoE_EmerGNN模型
+                    self.model = MoE_EmerGNN(inferred_kg_names, eval_ent, eval_rel, args)
+                    if torch.cuda.is_available():
+                        self.model.cuda()
+            
+            self.model.load_state_dict(torch.load(args.model_path, map_location="cpu"))
+        elif expert_ckpts:
+            # 分别加载每个专家模型
+            for i, (name, ckpt) in enumerate(zip(kg_names, expert_ckpts)):
+                if os.path.exists(ckpt):
+                    print(f">> 加载专家 {name} 参数：{ckpt}")
+                    self.model.load_expert(name, ckpt)
+        
+        # 冻结专家参数（只训练门控网络）
+        if freeze_experts:
+            print(">> 冻结专家参数，只训练门控网络")
+            for name, param in self.model.named_parameters():
+                if not name.startswith('gate'):
+                    param.requires_grad = False
+        
+        # 只优化需要梯度的参数
+        self.optimizer = Adam(filter(lambda p: p.requires_grad, self.model.parameters()), 
+                             lr=args.lr, weight_decay=args.lamb)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode="max")
 
     def _moe_loss(self, logits, labels, heads, tails):
@@ -174,6 +238,35 @@ class MoEBaseModel:
                 ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 f.write(f"==== 训练开始: {ts} ====\n超参数:\n")
                 for k,v in vars(self.args).items(): f.write(f"  {k}: {v}\n")
+                
+                # 记录特征矩阵维度信息到日志文件
+                n_experts = len(self.kg_names)
+                f.write("\n特征矩阵维度信息:\n")
+                if self.args.feat.upper() == "M":
+                    f.write(f"  - 输入维度: 1024 (Morgan指纹)\n")
+                    f.write(f"  - 实体嵌入维度: {self.args.n_dim}\n")
+                    f.write(f"  - 关系嵌入维度: {self.args.n_dim}\n")
+                    f.write(f"  - 专家数量: {n_experts}\n")
+                    f.write(f"  - 注意力权重维度: {2*self.args.all_rel+1}\n")
+                    f.write(f"  - 最终预测维度: {self.model.eval_rel}\n")
+                    f.write(f"  - 专家结构: head_hid + tail_hid → {2*self.args.n_dim} → {self.model.eval_rel}\n")
+                else:
+                    f.write(f"  - 实体嵌入维度: {self.args.n_dim}\n")
+                    f.write(f"  - 关系嵌入维度: {self.args.n_dim}\n")
+                    f.write(f"  - 专家数量: {n_experts}\n")
+                    f.write(f"  - 注意力权重维度: {2*self.args.all_rel+1}\n")
+                    f.write(f"  - 最终预测维度: {self.model.eval_rel}\n")
+                    f.write(f"  - 专家结构: head_emb + tail_emb + head_hid + tail_hid → {4*self.args.n_dim} → {self.model.eval_rel}\n")
+                
+                # 记录门控网络信息
+                f.write("\n门控网络维度:\n")
+                f.write(f"  - 输入维度: {2*self.args.n_dim}\n")
+                if self.args.gate_hidden > 0:
+                    f.write(f"  - 隐藏层维度: {self.args.gate_hidden}\n")
+                f.write(f"  - 输出维度: {n_experts}\n")
+                f.write(f"  - 门控类型: {self.args.gate_type}" + (f" (top-k={self.args.gate_topk})" if self.args.gate_type == "topk" else "") + "\n")
+                f.write(f"  - 熵正则系数: {self.args.gate_lamb}\n")
+                
                 f.write("\n时间戳,Epoch,类型,F1,Acc,Kappa\n")
         with open(log_file, "a", encoding="utf-8") as f:
             ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")

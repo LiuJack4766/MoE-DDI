@@ -46,6 +46,23 @@ def train_expert(args):
     dl = DataLoaderSubKG(args, args.kg_suffix)
     args.all_ent, args.all_rel, args.eval_rel = dl.all_ent, dl.all_rel, dl.eval_rel
     model = BaseModel(dl.eval_ent, dl.eval_rel, args)
+    
+    # 打印特征矩阵维度信息
+    if args.feat.upper() == "M":
+        print(f">> 特征矩阵维度信息:")
+        print(f"   - 输入维度: 1024 (Morgan指纹)")
+        print(f"   - 实体嵌入维度: {args.n_dim}")
+        print(f"   - 关系嵌入维度: {args.n_dim}")
+        print(f"   - 注意力权重维度: {2*args.all_rel+1}")
+        print(f"   - 最终预测维度: {dl.eval_rel}")
+        print(f"   - 连接方式: head_hid + tail_hid → {2*args.n_dim} → {dl.eval_rel}")
+    else:
+        print(f">> 特征矩阵维度信息:")
+        print(f"   - 实体嵌入维度: {args.n_dim}")
+        print(f"   - 关系嵌入维度: {args.n_dim}")
+        print(f"   - 注意力权重维度: {2*args.all_rel+1}")
+        print(f"   - 最终预测维度: {dl.eval_rel}")
+        print(f"   - 连接方式: head_emb + tail_emb + head_hid + tail_hid → {4*args.n_dim} → {dl.eval_rel}")
 
     # —— 可选：加载 checkpoint 继续训练 ——
     best_f1 = -1
